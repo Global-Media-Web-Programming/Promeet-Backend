@@ -1,6 +1,7 @@
 import express from 'express';
 import { MongoClient } from 'mongodb';
 import { ObjectId } from 'mongodb';
+import cors from "cors";
 
 const url =
   'mongodb+srv://red:FqLXCcWUluBe3uMd@cluster0.9uot7b6.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
@@ -8,6 +9,11 @@ const client = new MongoClient(url);
 
 const app = express();
 app.use(express.json());
+app.use(
+    cors({
+      origin: "http://localhost:5173", // 프론트엔드 주소
+    })
+);
 
 let userCollection;
 let likeCollection;
@@ -28,21 +34,22 @@ await connectDB();
 
 // 로그인 및 회원가입 통합 엔드포인트
 app.post('/auth/signin', async (req, res) => {
-  const { name, password } = req.body;
-  if (!name || !password) {
+  res.set('Cache-Control', 'no-store');
+  const { username, password } = req.body;
+  if (!username || !password) {
     return res.status(400).json({
       success: false,
       error: {
         code: 'MISSING_REQUIRED_FIELD',
-        message: '이름과 비밀번호는 필수',
+        message: '아이디와 비밀번호는 필수',
       },
     });
   }
   try {
-    let user = await userCollection.findOne({ name });
+    let user = await userCollection.findOne({ username });
     if (!user) {
       // 사용자 없으면 새로 생성
-      const result = await userCollection.insertOne({ name, password });
+      const result = await userCollection.insertOne({ username, password });
       return res.status(200).json({
         success: true,
         data: { userId: result.insertedId },
@@ -221,6 +228,8 @@ app.get('/list', async (req, res) => {
   }
 });
 
-app.listen(3000, () => {
-  console.log('포트 3000에서 실행 중...');
+// 서버 시작
+const PORT = 4000;
+app.listen(PORT, () => {
+  console.log(`서버가 http://localhost:${PORT}에서 실행 중`);
 });
