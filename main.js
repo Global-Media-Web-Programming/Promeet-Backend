@@ -445,7 +445,7 @@ app.patch('/promises/:promiseId/finalize', async (req, res) => {
     }
 });
 
-const PORT = 4000;
+const PORT = 8080;
 app.listen(PORT, () => {
     console.log(`서버가 http://localhost:${PORT}에서 실행 중`);
 });
