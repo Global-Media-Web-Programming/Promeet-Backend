@@ -176,7 +176,7 @@ app.get('/promises/:promiseId', async (req, res) => {
 });
 
 // 약속 생성자 정보 조회
-app.get('/promises/:promiseId/creator', async (req, res) => {
+app.get('/promises/:promiseId/summary', async (req, res) => {
     const { promiseId } = req.params;
     if (!promiseId)
         return sendError(res, 'MISSING_REQUIRED_PARAM', '필수 URL 경로 파라미터 누락', 404);
@@ -191,7 +191,9 @@ app.get('/promises/:promiseId/creator', async (req, res) => {
             success: true,
             data: {
                 creatorId: creator._id.toString(),
-                creatorName: creator.name
+                creatorName: creator.name,
+                title: promise.title,
+                description: promise.description
             }
         });
     } catch {
