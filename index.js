@@ -112,10 +112,8 @@ app.get('/promises/:promiseId', async (req, res) => {
                 name: m.name,
                 userId: m._id.toString(),
                 hasSubmittedData,
-                ...(hasSubmittedData ? {
-                    nearestStation: m.nearestStation,
-                    availableTimes: m.availableTimes
-                } : {}),
+                nearestStation: m.nearestStation,
+                availableTimes: m.availableTimes,
                 ...(isCreator ? {} : { hasLikedPlace })
             };
         });
@@ -375,7 +373,14 @@ app.post('/promises', async (req, res) => {
         const result = await promisesCollection.insertOne(promiseDoc);
         await userCollection.updateOne(
             { _id: new ObjectId(creatorId) },
-            { $addToSet: { 'promise.create': result.insertedId.toString() } }
+            {
+                $addToSet: { 'promise.create': result.insertedId.toString() },
+                $set: {
+                    nearestStation,
+                    availableTimes,
+                    hasSubmitted: true
+                }
+            }
         );
         res.status(201).json({
             success: true,
