@@ -2,6 +2,7 @@ import express from 'express';
 import { MongoClient, ObjectId } from 'mongodb';
 import cors from 'cors';
 
+const PORT = 4000;
 const url = 'mongodb+srv://red:FqLXCcWUluBe3uMd@cluster0.9uot7b6.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
 const client = new MongoClient(url);
 
@@ -174,6 +175,30 @@ app.get('/promises/:promiseId', async (req, res) => {
     }
 });
 
+// 약속 생성자 정보 조회
+app.get('/promises/:promiseId/creator', async (req, res) => {
+    const { promiseId } = req.params;
+    if (!promiseId)
+        return sendError(res, 'MISSING_REQUIRED_PARAM', '필수 URL 경로 파라미터 누락', 404);
+    try {
+        const promise = await promisesCollection.findOne({ _id: new ObjectId(promiseId) });
+        if (!promise)
+            return sendError(res, 'PROMISE_NOT_FOUND', '존재하지 않는 약속', 404);
+        const creator = await userCollection.findOne({ _id: new ObjectId(promise.creatorId) });
+        if (!creator)
+            return sendError(res, 'USER_NOT_FOUND', '생성자 정보 없음', 404);
+        res.status(200).json({
+            success: true,
+            data: {
+                creatorId: creator._id.toString(),
+                creatorName: creator.name
+            }
+        });
+    } catch {
+        sendError(res, 'SERVER_ERROR', '서버에 문제 발생', 500);
+    }
+});
+
 // 로그인
 app.post('/auth/signin', async (req, res) => {
     const { name, password, promiseId } = req.body;
@@ -208,6 +233,30 @@ app.post('/auth/logout', async (req, res) => {
         const user = await userCollection.findOne({ _id: new ObjectId(userId) });
         if (!user) return sendError(res, 'USER_NOT_FOUND', '존재하지 않는 사용자', 404);
         res.status(200).json({ success: true });
+    } catch {
+        sendError(res, 'SERVER_ERROR', '서버에 문제 발생', 500);
+    }
+});
+
+// 회원가입
+app.post('/auth/signup', async (req, res) => {
+    const { name, password } = req.body;
+    if (!name || !password)
+        return sendError(res, 'MISSING_REQUIRED_FIELD', '이름과 비밀번호는 필수');
+    try {
+        const exists = await userCollection.findOne({ name });
+        if (exists)
+            return sendError(res, 'USER_EXISTS', '이미 존재하는 사용자', 409);
+        const result = await userCollection.insertOne({
+            name,
+            password,
+            promise: { create: [], join: [] },
+            fixedSchedules: []
+        });
+        res.status(201).json({
+            success: true,
+            data: { userId: result.insertedId.toString(), name }
+        });
     } catch {
         sendError(res, 'SERVER_ERROR', '서버에 문제 발생', 500);
     }
@@ -265,7 +314,7 @@ app.delete('/user/:userId/fixed-schedules/:scheduleId', async (req, res) => {
 });
 
 // 고정 스케줄 수정
-app.put('/user/:userId/fixed-schedules/:scheduleId', async (req, res) => {
+app.patch('/user/:userId/fixed-schedules/:scheduleId', async (req, res) => {
     const { userId, scheduleId } = req.params;
     const { fixedSchedule } = req.body;
     if (!userId || !scheduleId || !fixedSchedule)
@@ -298,7 +347,7 @@ app.put('/user/:userId/fixed-schedules/:scheduleId', async (req, res) => {
 });
 
 // 약속 생성
-app.patch('/promises', async (req, res) => {
+app.post('/promises', async (req, res) => {
     const {
         creatorId, promiseName, promiseDescription,
         memberCnt, nearestStation, availableTimes
@@ -445,7 +494,6 @@ app.patch('/promises/:promiseId/finalize', async (req, res) => {
     }
 });
 
-const PORT = 4000;
 app.listen(PORT, () => {
     console.log(`서버가 http://localhost:${PORT}에서 실행 중`);
 });
