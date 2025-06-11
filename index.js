@@ -1,6 +1,7 @@
 import express from 'express';
 import { MongoClient, ObjectId } from 'mongodb';
 import cors from 'cors';
+import fs from 'fs';
 
 const PORT = 4000;
 const url = 'mongodb+srv://red:FqLXCcWUluBe3uMd@cluster0.9uot7b6.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
@@ -81,8 +82,7 @@ app.get('/promises/:promiseId', async (req, res) => {
 
         // 멤버 정보 조회
         const memberIds = promise.memberIds || [];
-        const membersRaw = await userCollection.find({ _id: { $in: memberIds.map(id => new ObjectId(id)) } }).toArray();
-
+        const membersRaw = await userCollection.find({ _id: { $in: memberIds } }).toArray();
         // 좋아요 정보 집계
         const likedPlacesRaw = await likesCollection.aggregate([
             { $match: { promiseId } },
@@ -106,7 +106,7 @@ app.get('/promises/:promiseId', async (req, res) => {
 
         const members = membersRaw.map(m => {
             const isCreator = m._id.toString() === creatorId;
-            const hasSubmittedData = !!(m.nearestStation && m.availableTimes);
+            const hasSubmittedData = !!(m.nearestStation && Array.isArray(m.availableTimes) && m.availableTimes.length > 0);
             const hasLikedPlace = !isCreator && !!likedPlaceUserMap[m._id.toString()];
             return {
                 name: m.name,
@@ -499,6 +499,118 @@ app.patch('/promises/:promiseId/finalize', async (req, res) => {
     } catch {
         sendError(res, 'SERVER_ERROR', '서버에 문제 발생', 500);
     }
+});
+
+const metroGraph = JSON.parse(fs.readFileSync('metro_graph.json', 'utf-8'));
+
+// 그래프 구성 (midpoint.js 참고)
+const graph = {};
+metroGraph.forEach(({ station, neighbors }) => {
+  graph[station] = neighbors.map(({ station: neighbor, time }) => ({
+    node: neighbor,
+    weight: time
+  }));
+});
+class PriorityQueue {
+  constructor() { this.queue = []; }
+  enqueue(node, priority) {
+    this.queue.push({ node, priority });
+    this.queue.sort((a, b) => a.priority - b.priority);
+  }
+  dequeue() { return this.queue.shift(); }
+  isEmpty() { return this.queue.length === 0; }
+}
+function dijkstraWithPaths(start) {
+  const times = {}, prev = {}, visited = {}, pq = new PriorityQueue();
+  Object.keys(graph).forEach(station => { times[station] = Infinity; prev[station] = null; });
+  times[start] = 0; pq.enqueue(start, 0);
+  while (!pq.isEmpty()) {
+    const { node: current } = pq.dequeue();
+    if (visited[current]) continue;
+    visited[current] = true;
+    graph[current].forEach(({ node: neighbor, weight }) => {
+      const newTime = times[current] + weight;
+      if (newTime < times[neighbor]) {
+        times[neighbor] = newTime;
+        prev[neighbor] = current;
+        pq.enqueue(neighbor, newTime);
+      }
+    });
+  }
+  function getPath(target) {
+    const path = [];
+    let node = target;
+    while (node) { path.unshift(node); node = prev[node]; }
+    return path;
+  }
+  return { times, getPath };
+}
+function evaluateCandidates(starts) {
+  const results = starts.map(start => dijkstraWithPaths(start));
+  const candidates = [];
+  Object.keys(graph).forEach(station => {
+    const times = results.map(r => r.times[station] ?? Infinity);
+    const total = times.reduce((a, b) => a + b, 0);
+    const avg = total / times.length;
+    const stddev = Math.sqrt(times.reduce((sum, t) => sum + Math.pow(t - avg, 2), 0) / times.length);
+    candidates.push({ station, total, avg, stddev, times });
+  });
+  const byTotal = [...candidates].sort((a, b) => a.total - b.total)[0];
+  const byBalance = [...candidates].sort((a, b) => (a.stddev + a.avg) - (b.stddev + b.avg))[0];
+  return { results, byTotal, byBalance };
+}
+
+// 중간지점 계산 API
+app.post('/midpoint', async (req, res) => {
+  const { stations } = req.body;
+  if (!stations || !Array.isArray(stations) || stations.length < 2)
+    return sendError(res, 'INVALID_INPUT', '2개 이상의 출발역(stations)이 필요합니다');
+  try {
+    const { results, byTotal, byBalance } = evaluateCandidates(stations);
+
+    // 각 사용자별 경로 및 시간 정보
+    const userRoutes = results.map((r, idx) => ({
+      start: stations[idx],
+      toByTotal: {
+        time: r.times[byTotal.station],
+        path: r.getPath(byTotal.station)
+      },
+      toByBalance: {
+        time: r.times[byBalance.station],
+        path: r.getPath(byBalance.station)
+      }
+    }));
+
+    res.status(200).json({
+      success: true,
+      data: {
+        byTotal: {
+          station: byTotal.station,
+          total: byTotal.total,
+          avg: byTotal.avg,
+          stddev: byTotal.stddev,
+          userRoutes: userRoutes.map(u => ({
+            start: u.start,
+            time: u.toByTotal.time,
+            path: u.toByTotal.path
+          }))
+        },
+        byBalance: {
+          station: byBalance.station,
+          total: byBalance.total,
+          avg: byBalance.avg,
+          stddev: byBalance.stddev,
+          userRoutes: userRoutes.map(u => ({
+            start: u.start,
+            time: u.toByBalance.time,
+            path: u.toByBalance.path
+          }))
+        }
+      }
+    });
+  } catch (e) {
+    sendError(res, 'SERVER_ERROR', '중간지점 계산 중 오류', 500);
+  }
 });
 
 app.listen(PORT, () => {
