@@ -1,8 +1,8 @@
+import path from 'path';
 import express from 'express';
 import {MongoClient, ObjectId} from 'mongodb';
 import cors from 'cors';
 import fs from 'fs';
-import dotenv from 'dotenv';
 
 const PORT = 4000;
 const url = process.env.MONGO_URL;
@@ -88,13 +88,16 @@ app.get('/promises/:promiseId', async (req, res) => {
 
         // 각 멤버의 nearestStation만 추출
         const nearestStations = membersRaw
-            .map(m => m.nearestStation)
+            .map(m => typeof m.nearestStation === 'string'
+                ? m.nearestStation
+                : m.nearestStation?.name // 또는 .station 등 실제 필드명에 맞게
+            )
             .filter(Boolean);
 
         // 중간지점 계산 (2명 이상일 때만)
         let midpoint = null;
         if (nearestStations.length >= 2) {
-            midpoint = evaluateCandidates(nearestStations, memberIds);
+            midpoint = evaluateCandidates(nearestStations);
         }
         // 좋아요 정보 집계
         const likedPlacesRaw = await likesCollection.aggregate([
@@ -510,128 +513,136 @@ app.patch('/promises/:promiseId/finalize', async (req, res) => {
     }
 });
 
-// 중간지점 계산 API
-app.post('/midpoint', async (req, res) => {
-    const {stations} = req.body;
-    if (!stations || !Array.isArray(stations) || stations.length < 2)
-        return sendError(res, 'INVALID_INPUT', '2개 이상의 출발역(stations)이 필요합니다');
-    try {
-        const {results, byTotal} = evaluateCandidates(stations);
 
-        // 각 사용자별 경로 및 시간 정보
-        const userRoutes = results.map((r, idx) => ({
-            start: stations[idx],
-            toByTotal: {
-                time: r.times[byTotal.station],
-                path: r.getPath(byTotal.station)
-            }
-        }));
 
-        res.status(200).json({
-            success: true,
-            data: {
-                station: byTotal.station,
-                total: byTotal.total,
-                avg: byTotal.avg,
-                userRoutes: userRoutes.map(u => ({
-                    start: u.start,
-                    time: u.toByTotal.time,
-                    path: u.toByTotal.path
-                }))
-            }
-        });
-    } catch (e) {
-        sendError(res, 'SERVER_ERROR', '중간지점 계산 중 오류', 500);
-    }
-});
-
-app.listen(PORT, () => {
-    console.log(`서버가 http://localhost:${PORT}에서 실행 중`);
-});
-
-const metroGraph = JSON.parse(fs.readFileSync('metro_graph.json', 'utf-8'));
-
-// 그래프 구성ㅋ
-const graph = {};
-metroGraph.forEach(({station, neighbors}) => {
-    graph[station] = neighbors.map(({station: neighbor, time}) => ({
-        node: neighbor,
-        weight: time
-    }));
+// ----- Metro Graph & Midpoint API -----
+const metroData = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'metro_graph.json'), 'utf-8'));
+const metroGraph = {};
+metroData.forEach(({ station, neighbors }) => {
+  metroGraph[station] = neighbors.map(({ station: neighbor, time }) => ({
+    node: neighbor,
+    weight: time
+  }));
 });
 
 class PriorityQueue {
-    constructor() {
-        this.queue = [];
-    }
-
-    enqueue(node, priority) {
-        this.queue.push({node, priority});
-        this.queue.sort((a, b) => a.priority - b.priority);
-    }
-
-    dequeue() {
-        return this.queue.shift();
-    }
-
-    isEmpty() {
-        return this.queue.length === 0;
-    }
+  constructor() {
+    this.queue = [];
+  }
+  enqueue(node, priority) {
+    this.queue.push({ node, priority });
+    this.queue.sort((a, b) => a.priority - b.priority);
+  }
+  dequeue() {
+    return this.queue.shift();
+  }
+  isEmpty() {
+    return this.queue.length === 0;
+  }
 }
 
 function dijkstraWithPaths(start) {
-    const times = {}, prev = {}, visited = {}, pq = new PriorityQueue();
-    Object.keys(graph).forEach(station => {
-        times[station] = Infinity;
-        prev[station] = null;
+  const times = {};
+  const prev = {};
+  const visited = {};
+  const pq = new PriorityQueue();
+
+  Object.keys(metroGraph).forEach(station => {
+    times[station] = Infinity;
+    prev[station] = null;
+  });
+  times[start] = 0;
+  pq.enqueue(start, 0);
+
+  while (!pq.isEmpty()) {
+    const { node: current } = pq.dequeue();
+    if (visited[current]) continue;
+    visited[current] = true;
+
+    (metroGraph[current] || []).forEach(({ node: neighbor, weight }) => {
+      const newTime = times[current] + weight;
+      if (newTime < times[neighbor]) {
+        times[neighbor] = newTime;
+        prev[neighbor] = current;
+        pq.enqueue(neighbor, newTime);
+      }
     });
-    times[start] = 0;
-    pq.enqueue(start, 0);
-    while (!pq.isEmpty()) {
-        const {node: current} = pq.dequeue();
-        if (visited[current]) continue;
-        visited[current] = true;
-        if (!graph[current]) {
-            console.error(`[DIJKSTRA] 그래프에 없는 역: ${current}`);
-            return {times, getPath: () => []};
-        }
-        graph[current].forEach(({node: neighbor, weight}) => {
-            const newTime = times[current] + weight;
-            if (newTime < times[neighbor]) {
-                times[neighbor] = newTime;
-                prev[neighbor] = current;
-                pq.enqueue(neighbor, newTime);
-            }
-        });
-    }
+  }
 
-    function getPath(target) {
-        const path = [];
-        let node = target;
-        while (node) {
-            path.unshift(node);
-            node = prev[node];
-        }
-        return path;
+  function getPath(target) {
+    const path = [];
+    let node = target;
+    while (node) {
+      path.unshift(node);
+      node = prev[node];
     }
+    return path;
+  }
 
-    return {times, getPath};
+  return { times, getPath };
 }
 
-function evaluateCandidates(starts, userIds) {
-    const results = starts.map((start, idx) => ({
-        userId: userIds[idx],
-        ...dijkstraWithPaths(start)
-    }));
-    const candidates = [];
-    Object.keys(graph).forEach(station => {
-        const times = results.map(r => r.times[station] ?? Infinity);
-        const total = times.reduce((a, b) => a + b, 0);
-        const avg = total / times.length;
-        candidates.push({station, total, avg, times});
-    });
-    const byTotal = [...candidates].sort((a, b) => a.total - b.total)[0];
-    return {results, byTotal};
+function evaluateCandidates(starts) {
+  const results = starts.map(start => {
+    const { times, getPath } = dijkstraWithPaths(start);
+    return { start, times, getPath };
+  });
+
+  const candidates = [];
+
+  Object.keys(metroGraph).forEach(station => {
+    const times = results.map(r => r.times[station] ?? Infinity);
+    const total = times.reduce((a, b) => a + b, 0);
+    const avg = total / times.length;
+    const stddev = Math.sqrt(
+      times.reduce((sum, t) => sum + Math.pow(t - avg, 2), 0) / times.length
+    );
+    candidates.push({ station, total, avg, stddev, times });
+  });
+
+  const byTotal = [...candidates].sort((a, b) => a.total - b.total)[0];
+  const byBalance = [...candidates].sort((a, b) => (a.stddev + a.avg) - (b.stddev + b.avg))[0];
+
+  return { results, byTotal, byBalance };
 }
 
+app.post('/midpoint', async (req, res) => {
+  const { starts } = req.body;
 
+  // 출발지 배열이 2개 이상인지 확인
+  if (!Array.isArray(starts) || starts.length < 2)
+    return sendError(res, 'INVALID_START_POINTS', '2개 이상의 출발지를 배열로 제공해야 합니다');
+
+  try {
+    // 모든 출발지로부터 다익스트라 실행 및 후보지 평가
+    const { results, byTotal } = evaluateCandidates(starts);
+
+    // 응답 데이터 구성: 가장 총 이동 시간이 짧은 지점만 반환
+    res.status(200).json({
+      success: true,
+      data: {
+        totalOptimized: {
+          station: byTotal.station,
+          total: byTotal.total,
+          avg: byTotal.avg,
+          stddev: byTotal.stddev
+        },
+        paths: results.map(r => ({
+          start: r.start,
+          toTotal: {
+            time: r.times[byTotal.station],
+            path: r.getPath(byTotal.station)
+          }
+        }))
+      }
+    });
+  } catch (e) {
+    console.error('Midpoint evaluation error:', e);
+    sendError(res, 'SERVER_ERROR', '중간지점 계산 중 오류 발생', 500);
+  }
+});
+
+// 서버 시작
+app.listen(PORT, () => {
+  console.log(`서버가 http://localhost:${PORT}에서 실행 중입니다`);
+});
