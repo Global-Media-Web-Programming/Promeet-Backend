@@ -1,7 +1,6 @@
 import express from 'express';
 import { MongoClient, ObjectId } from 'mongodb';
 import cors from 'cors';
-import fs from 'fs';
 
 const PORT = 4000;
 const url = 'mongodb+srv://red:FqLXCcWUluBe3uMd@cluster0.9uot7b6.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
@@ -82,7 +81,7 @@ app.get('/promises/:promiseId', async (req, res) => {
 
         // 멤버 정보 조회
         const memberIds = promise.memberIds || [];
-        const membersRaw = await userCollection.find({ _id: { $in: memberIds } }).toArray();
+        const membersRaw = await userCollection.find({ _id: { $in: memberIds.map(id => new ObjectId(id)) } }).toArray();
         // 좋아요 정보 집계
         const likedPlacesRaw = await likesCollection.aggregate([
             { $match: { promiseId } },
@@ -106,7 +105,7 @@ app.get('/promises/:promiseId', async (req, res) => {
 
         const members = membersRaw.map(m => {
             const isCreator = m._id.toString() === creatorId;
-            const hasSubmittedData = !!(m.nearestStation && Array.isArray(m.availableTimes) && m.availableTimes.length > 0);
+            const hasSubmittedData = !!(m.nearestStation && m.availableTimes);
             const hasLikedPlace = !isCreator && !!likedPlaceUserMap[m._id.toString()];
             return {
                 name: m.name,
