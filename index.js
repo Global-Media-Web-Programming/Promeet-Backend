@@ -2,6 +2,7 @@ import express from 'express';
 import {MongoClient, ObjectId} from 'mongodb';
 import cors from 'cors';
 import fs from 'fs';
+import dotenv from 'dotenv';
 
 const PORT = 4000;
 const url = process.env.MONGO_URL;
@@ -93,7 +94,7 @@ app.get('/promises/:promiseId', async (req, res) => {
         // 중간지점 계산 (2명 이상일 때만)
         let midpoint = null;
         if (nearestStations.length >= 2) {
-            midpoint = evaluateCandidates(nearestStations);
+            midpoint = evaluateCandidates(nearestStations, memberIds);
         }
         // 좋아요 정보 집계
         const likedPlacesRaw = await likesCollection.aggregate([
@@ -175,7 +176,8 @@ app.get('/promises/:promiseId', async (req, res) => {
                 isFixed: !!promise.isFixed
             }
         });
-    } catch {
+    } catch (e) {
+        console.error('[약속 정보 조회 오류]', e); // 에러 로그 출력
         sendError(res, 'SERVER_ERROR', '서버에 문제 발생', 500);
     }
 });
@@ -549,7 +551,7 @@ app.listen(PORT, () => {
 
 const metroGraph = JSON.parse(fs.readFileSync('metro_graph.json', 'utf-8'));
 
-// 그래프 구성
+// 그래프 구성ㅋ
 const graph = {};
 metroGraph.forEach(({station, neighbors}) => {
     graph[station] = neighbors.map(({station: neighbor, time}) => ({
@@ -589,6 +591,10 @@ function dijkstraWithPaths(start) {
         const {node: current} = pq.dequeue();
         if (visited[current]) continue;
         visited[current] = true;
+        if (!graph[current]) {
+            console.error(`[DIJKSTRA] 그래프에 없는 역: ${current}`);
+            return {times, getPath: () => []};
+        }
         graph[current].forEach(({node: neighbor, weight}) => {
             const newTime = times[current] + weight;
             if (newTime < times[neighbor]) {
@@ -612,8 +618,11 @@ function dijkstraWithPaths(start) {
     return {times, getPath};
 }
 
-function evaluateCandidates(starts) {
-    const results = starts.map(start => dijkstraWithPaths(start));
+function evaluateCandidates(starts, userIds) {
+    const results = starts.map((start, idx) => ({
+        userId: userIds[idx],
+        ...dijkstraWithPaths(start)
+    }));
     const candidates = [];
     Object.keys(graph).forEach(station => {
         const times = results.map(r => r.times[station] ?? Infinity);
